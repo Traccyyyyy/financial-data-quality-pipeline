@@ -1,0 +1,564 @@
+{
+  "name": "RBA FX Data Quality Pipeline (Public Showcase)",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "https://www.rba.gov.au/statistics/tables/csv/f11.1-data.csv",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -304,
+        -1376
+      ],
+      "id": "ff64f555-afa8-417f-affe-b68dd707d5a2",
+      "name": "Fetch RBA FX CSV"
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -32,
+        -1376
+      ],
+      "id": "f0b8de7b-1670-4e73-8cb6-2bb7b383a984",
+      "name": "Extract CSV as Text"
+    },
+    {
+      "parameters": {
+        "jsCode": "const run = $input.first().json;\nconst text = $('Extract CSV as Text').first().json.data;\n\nif (typeof text !== 'string' || text.length === 0) {\n  throw new Error('RBA source text is missing');\n}\n\nconst lines = text.split(/\\r?\\n/);\n\nconst headerIndex = lines.findIndex((line) =>\n  line.replace(/^\\uFEFF/, '').startsWith('Series ID,')\n);\n\nif (headerIndex === -1) {\n  throw new Error('Could not find the RBA Series ID header');\n}\n\nconst cleanedCsv = lines\n  .slice(headerIndex)\n  .join('\\n')\n  .trim();\n\nreturn [{\n  json: {\n    run_id: Number(run.run_id),\n    source: run.source,\n    source_fingerprint: run.source_fingerprint,\n    cleanedCsv\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        336,
+        -1440
+      ],
+      "id": "0a76c451-636a-47f2-8a11-afe29f8acb90",
+      "name": "Remove RBA Metadata"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst text = input.cleanedCsv;\n\nfunction parseCsv(csvText) {\n  const normalized = csvText\n    .replace(/\\r\\n/g, '\\n')\n    .replace(/\\r/g, '\\n');\n\n  const rows = [];\n  let row = [];\n  let field = '';\n  let inQuotes = false;\n\n  for (let i = 0; i < normalized.length; i++) {\n    const ch = normalized[i];\n\n    if (inQuotes) {\n      if (ch === '\"') {\n        if (normalized[i + 1] === '\"') {\n          field += '\"';\n          i++;\n        } else {\n          inQuotes = false;\n        }\n      } else {\n        field += ch;\n      }\n\n      continue;\n    }\n\n    if (ch === '\"') {\n      inQuotes = true;\n\n    } else if (ch === ',') {\n      row.push(field);\n      field = '';\n\n    } else if (ch === '\\n') {\n      row.push(field);\n      rows.push(row);\n\n      row = [];\n      field = '';\n\n    } else {\n      field += ch;\n    }\n  }\n\n  if (inQuotes) {\n    throw new Error(\n      'Malformed CSV: unclosed quoted field'\n    );\n  }\n\n  if (field.length > 0 || row.length > 0) {\n    row.push(field);\n    rows.push(row);\n  }\n\n  return rows;\n}\n\n\nconst matrix = parseCsv(text)\n  .filter((row) =>\n    row.some(\n      (value) =>\n        String(value).trim() !== ''\n    )\n  );\n\n\nif (matrix.length < 2) {\n  throw new Error(\n    'CSV contains a header but no data rows'\n  );\n}\n\n\nconst headers = matrix[0].map((header) =>\n  String(header)\n    .replace(/^\\uFEFF/, '')\n    .trim()\n);\n\n\nif (headers[0] !== 'Series ID') {\n  throw new Error(\n    `Unexpected first header: ${headers[0]}`\n  );\n}\n\n\nconst seenHeaders = new Set();\n\nfor (const header of headers) {\n\n  if (header === '') {\n    throw new Error(\n      'Malformed CSV: blank header detected'\n    );\n  }\n\n  if (seenHeaders.has(header)) {\n    throw new Error(\n      `Malformed CSV: duplicate header \"${header}\"`\n    );\n  }\n\n  seenHeaders.add(header);\n}\n\n\nconst output = [];\n\n\nfor (\n  let dataIndex = 1;\n  dataIndex < matrix.length;\n  dataIndex++\n) {\n\n  const values = matrix[dataIndex];\n\n  if (values.length !== headers.length) {\n    throw new Error(\n      `Malformed CSV at data row ${dataIndex}: ` +\n      `expected ${headers.length} fields, ` +\n      `got ${values.length}`\n    );\n  }\n\n\n  const obj = {\n    run_id: input.run_id,\n    source: input.source,\n    source_row_no: dataIndex\n  };\n\n\n  headers.forEach((header, i) => {\n    obj[header] = values[i];\n  });\n\n\n  output.push({\n    json: obj\n  });\n}\n\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        -1440
+      ],
+      "id": "cc2a240a-f8dd-427b-83b0-3078e788290c",
+      "name": "Parse CSV Rows"
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = [];\n\nconst reservedKeys = new Set([\n  'run_id',\n  'source',\n  'source_row_no',\n  'Series ID'\n]);\n\nfor (const item of $input.all()) {\n  const row = item.json;\n\n  const rawRateDate =\n    row['Series ID'] === undefined ||\n    row['Series ID'] === null\n      ? null\n      : String(row['Series ID']);\n\n  for (const [seriesId, value] of Object.entries(row)) {\n\n    if (reservedKeys.has(seriesId)) {\n      continue;\n    }\n\n    output.push({\n      json: {\n        run_id: Number(row.run_id),\n        source_row_no: Number(row.source_row_no),\n        raw_rate_date: rawRateDate,\n        series_id: String(seriesId),\n\n        raw_rate:\n          value === undefined ||\n          value === null\n            ? null\n            : String(value),\n\n        source: row.source\n      }\n    });\n  }\n}\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        -1440
+      ],
+      "id": "2e020540-3e94-4544-9c15-f9939688852f",
+      "name": "Normalize FX Rates to Long Format"
+    },
+    {
+      "parameters": {
+        "value": "={{ $json.data }}",
+        "dataPropertyName": "source_fingerprint"
+      },
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [
+        -288,
+        -1120
+      ],
+      "id": "569a1f2e-acf9-4df9-9130-1b1e59f210e4",
+      "name": "Hash Source Text"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH resolved AS (\n    INSERT INTO public.pipeline_runs (\n        source,\n        source_fingerprint,\n        source_url,\n        n8n_execution_id,\n        status\n    )\n    VALUES (\n        'RBA',\n        $1,\n        $2,\n        $3,\n        'IN_PROGRESS'\n    )\n    ON CONFLICT (source, source_fingerprint)\n    DO UPDATE SET\n        source_url = EXCLUDED.source_url,\n        n8n_execution_id = EXCLUDED.n8n_execution_id,\n        last_attempt_at = NOW()\n    RETURNING\n        run_id,\n        source,\n        source_fingerprint,\n        status\n)\nSELECT\n    run_id,\n    source,\n    source_fingerprint,\n    status,\n    (status <> 'SUCCESS') AS should_process\nFROM resolved;",
+        "options": {
+          "queryReplacement": "={{ [\n  $json.source_fingerprint,\n  'https://www.rba.gov.au/statistics/tables/csv/f11.1-data.csv',\n  $execution.id\n] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        -32,
+        -1120
+      ],
+      "id": "d4a568af-5d95-41bf-b0b0-5ed282e50086",
+      "name": "Register or Resume Run"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "80128cf9-44cc-4af7-8453-5d2022440ebe",
+              "leftValue": "={{ $json.should_process }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        192,
+        -1120
+      ],
+      "id": "41530d60-ae3f-44c7-9ad4-0b2cff7d212d",
+      "name": "Should Process Source?"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b6da8965-2929-4a7a-8aad-8af118af274e",
+              "name": "result",
+              "value": "SKIPPED_DUPLICATE_SOURCE",
+              "type": "string"
+            },
+            {
+              "id": "99608a4c-7ce0-47d6-b304-d7f6128fbe07",
+              "name": "run_id",
+              "value": "={{ $json.run_id }}",
+              "type": "string"
+            },
+            {
+              "id": "73b3d14d-a41d-4228-9087-be6f72a659c3",
+              "name": "status",
+              "value": "={{ $json.status }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        352,
+        -864
+      ],
+      "id": "14633a8c-2424-428e-9d02-d42e44baffc1",
+      "name": "Stop - Source Already Processed"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nif (items.length === 0) {\n  throw new Error('No normalized records received');\n}\n\nconst runId = Number(items[0].json.run_id);\n\nfor (const item of items) {\n  if (Number(item.json.run_id) !== runId) {\n    throw new Error(\n      'Mixed run_id values detected in one staging batch'\n    );\n  }\n}\n\nconst records = items.map((item) => ({\n  source_row_no: Number(\n    item.json.source_row_no\n  ),\n\n  raw_rate_date:\n    item.json.raw_rate_date,\n\n  series_id:\n    item.json.series_id,\n\n  raw_rate:\n    item.json.raw_rate,\n\n  source:\n    item.json.source\n}));\n\nreturn [{\n  json: {\n    run_id: runId,\n    normalized_record_count:\n      records.length,\n    records\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1056,
+        -1440
+      ],
+      "id": "ffbb7424-3297-4def-8453-f6ea40fce79d",
+      "name": "Package Staging Batch"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH input_rows AS (\n    SELECT *\n    FROM jsonb_to_recordset($1::JSONB)\n    AS x(\n        source_row_no INTEGER,\n        raw_rate_date TEXT,\n        series_id TEXT,\n        raw_rate TEXT,\n        source TEXT\n    )\n),\ninserted AS (\n    INSERT INTO public.fx_rates_staging (\n        run_id,\n        source_row_no,\n        raw_rate_date,\n        series_id,\n        raw_rate,\n        source\n    )\n    SELECT\n        $2::BIGINT,\n        source_row_no,\n        raw_rate_date,\n        series_id,\n        raw_rate,\n        source\n    FROM input_rows\n    ON CONFLICT (\n        run_id,\n        source_row_no,\n        series_id\n    )\n    DO NOTHING\n    RETURNING staging_id\n)\nSELECT\n    $2::BIGINT AS run_id,\n\n    (\n        SELECT COUNT(*)\n        FROM input_rows\n    )::INTEGER AS received_count,\n\n    (\n        SELECT COUNT(*)\n        FROM inserted\n    )::INTEGER AS inserted_count,\n\n    (\n        (\n            SELECT COUNT(*)\n            FROM input_rows\n        )\n        -\n        (\n            SELECT COUNT(*)\n            FROM inserted\n        )\n    )::INTEGER AS duplicate_skipped;",
+        "options": {
+          "queryReplacement": "={{ [   JSON.stringify($json.records),   $json.run_id ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        544,
+        -1168
+      ],
+      "id": "ebcf2abe-e340-4867-a455-87f3064b6f5a",
+      "name": "Load Batch to Staging"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH base AS (\n    SELECT\n        s.*,\n        NULLIF(BTRIM(s.raw_rate_date), '') AS clean_date_text,\n        NULLIF(BTRIM(s.series_id), '') AS clean_series_id,\n        NULLIF(BTRIM(s.raw_rate), '') AS clean_rate_text\n    FROM public.fx_rates_staging s\n    WHERE s.run_id = $1::BIGINT\n),\ntyped AS (\n    SELECT\n        b.*,\n        CASE\n            WHEN clean_date_text IS NOT NULL\n             AND clean_date_text ~ '^[0-9]{2}-[A-Za-z]{3}-[0-9]{4}$'\n             AND pg_input_is_valid(clean_date_text, 'date')\n            THEN clean_date_text::DATE\n            ELSE NULL\n        END AS parsed_date,\n        CASE\n            WHEN clean_rate_text IS NOT NULL\n             AND UPPER(clean_rate_text) NOT IN (\n                 'NAN',\n                 'INFINITY',\n                 '+INFINITY',\n                 '-INFINITY',\n                 'INF',\n                 '+INF',\n                 '-INF'\n             )\n             AND pg_input_is_valid(\n                 clean_rate_text,\n                 'numeric(20,8)'\n             )\n            THEN clean_rate_text::NUMERIC(20,8)\n            ELSE NULL\n        END AS parsed_rate\n    FROM base b\n),\ntagged AS (\n    SELECT\n        t.*,\n        CASE\n            WHEN parsed_date IS NOT NULL\n             AND clean_series_id IS NOT NULL\n            THEN COUNT(*) OVER (\n                PARTITION BY\n                    source,\n                    parsed_date,\n                    clean_series_id\n            )\n            ELSE 0\n        END AS business_key_count\n    FROM typed t\n),\nerrors AS (\n    SELECT\n        t.run_id,\n        t.staging_id,\n        e.error_code,\n        e.error_detail\n    FROM tagged t\n    CROSS JOIN LATERAL (\n        VALUES\n        (\n            'MISSING_DATE',\n            CASE\n                WHEN t.clean_date_text IS NULL\n                THEN 'raw_rate_date is null or blank'\n            END\n        ),\n        (\n            'INVALID_DATE_FORMAT',\n            CASE\n                WHEN t.clean_date_text IS NOT NULL\n                 AND t.clean_date_text\n                     !~ '^[0-9]{2}-[A-Za-z]{3}-[0-9]{4}$'\n                THEN 'Expected date format DD-Mon-YYYY'\n            END\n        ),\n        (\n            'INVALID_DATE_VALUE',\n            CASE\n                WHEN t.clean_date_text IS NOT NULL\n                 AND t.clean_date_text\n                     ~ '^[0-9]{2}-[A-Za-z]{3}-[0-9]{4}$'\n                 AND t.parsed_date IS NULL\n                THEN 'Date text matches the expected format but is not a valid date'\n            END\n        ),\n        (\n            'MISSING_SERIES_ID',\n            CASE\n                WHEN t.clean_series_id IS NULL\n                THEN 'series_id is null or blank'\n            END\n        ),\n        (\n            'INVALID_SERIES_ID',\n            CASE\n                WHEN t.clean_series_id IS NOT NULL\n                 AND t.clean_series_id\n                     !~ '^FXR[A-Z0-9]+$'\n                THEN 'Unexpected RBA series_id format'\n            END\n        ),\n        (\n            'MISSING_RATE',\n            CASE\n                WHEN t.clean_rate_text IS NULL\n                THEN 'raw_rate is null or blank'\n            END\n        ),\n        (\n            'NON_FINITE_RATE',\n            CASE\n                WHEN t.clean_rate_text IS NOT NULL\n                 AND UPPER(t.clean_rate_text) IN (\n                     'NAN',\n                     'INFINITY',\n                     '+INFINITY',\n                     '-INFINITY',\n                     'INF',\n                     '+INF',\n                     '-INF'\n                 )\n                THEN 'Rate is non-finite'\n            END\n        ),\n        (\n            'INVALID_RATE',\n            CASE\n                WHEN t.clean_rate_text IS NOT NULL\n                 AND UPPER(t.clean_rate_text) NOT IN (\n                     'NAN',\n                     'INFINITY',\n                     '+INFINITY',\n                     '-INFINITY',\n                     'INF',\n                     '+INF',\n                     '-INF'\n                 )\n                 AND NOT pg_input_is_valid(\n                     t.clean_rate_text,\n                     'numeric(20,8)'\n                 )\n                THEN 'Rate cannot be converted to NUMERIC(20,8)'\n            END\n        ),\n        (\n            'NON_POSITIVE_RATE',\n            CASE\n                WHEN t.parsed_rate IS NOT NULL\n                 AND t.parsed_rate <= 0\n                THEN 'Rate must be greater than zero'\n            END\n        ),\n        (\n            'DUPLICATE_BUSINESS_KEY',\n            CASE\n                WHEN t.business_key_count > 1\n                THEN 'Duplicate (source, rate_date, series_id) exists inside this source run'\n            END\n        )\n    ) AS e(\n        error_code,\n        error_detail\n    )\n    WHERE e.error_detail IS NOT NULL\n),\ninserted AS (\n    INSERT INTO public.dq_exceptions (\n        run_id,\n        staging_id,\n        error_code,\n        error_detail\n    )\n    SELECT\n        run_id,\n        staging_id,\n        error_code,\n        error_detail\n    FROM errors\n    ON CONFLICT (\n        run_id,\n        staging_id,\n        error_code\n    )\n    DO NOTHING\n    RETURNING exception_id\n)\nSELECT\n    $1::BIGINT AS run_id,\n\n    (\n        SELECT COUNT(DISTINCT staging_id)\n        FROM errors\n    )::INTEGER AS invalid_record_count,\n\n    (\n        SELECT COUNT(*)\n        FROM errors\n    )::INTEGER AS detected_error_count,\n\n    (\n        SELECT COUNT(*)\n        FROM inserted\n    )::INTEGER AS newly_inserted_exception_count;",
+        "options": {
+          "queryReplacement": "={{ [   $('Register or Resume Run').first().json.run_id ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        800,
+        -1168
+      ],
+      "id": "a75ffc72-4a88-4378-91f3-05be09f73f07",
+      "name": "Validate Staging and Record Exceptions"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH clean AS (\n    SELECT\n        s.staging_id,\n        s.run_id,\n        s.source,\n        BTRIM(s.raw_rate_date)::DATE AS rate_date,\n        BTRIM(s.series_id) AS series_id,\n        BTRIM(s.raw_rate)::NUMERIC(20,8) AS rate\n    FROM public.fx_rates_staging s\n    WHERE s.run_id = $1::BIGINT\n      AND NOT EXISTS (\n          SELECT 1\n          FROM public.dq_exceptions e\n          WHERE e.run_id = s.run_id\n            AND e.staging_id = s.staging_id\n      )\n),\nclassified AS (\n    SELECT\n        c.*,\n        CASE\n            WHEN m.source IS NULL\n                THEN 'NEW'\n            WHEN m.rate IS DISTINCT FROM c.rate\n                THEN 'CHANGED'\n            ELSE 'UNCHANGED'\n        END AS load_action\n    FROM clean c\n    LEFT JOIN public.fx_rates_master m\n      ON m.source = c.source\n     AND m.rate_date = c.rate_date\n     AND m.series_id = c.series_id\n),\nexisting AS (\n    SELECT\n        staging_id,\n        load_action\n    FROM public.fx_rates_validated\n    WHERE run_id = $1::BIGINT\n),\ninserted AS (\n    INSERT INTO public.fx_rates_validated (\n        run_id,\n        staging_id,\n        source,\n        rate_date,\n        series_id,\n        rate,\n        load_action\n    )\n    SELECT\n        run_id,\n        staging_id,\n        source,\n        rate_date,\n        series_id,\n        rate,\n        load_action\n    FROM classified\n    ON CONFLICT (run_id, staging_id)\n    DO NOTHING\n    RETURNING\n        staging_id,\n        load_action\n),\npersisted AS (\n    SELECT\n        staging_id,\n        load_action\n    FROM existing\n\n    UNION ALL\n\n    SELECT\n        staging_id,\n        load_action\n    FROM inserted\n)\nSELECT\n    $1::BIGINT AS run_id,\n    COUNT(*)::INTEGER AS accepted_count,\n    COUNT(*) FILTER (\n        WHERE load_action = 'NEW'\n    )::INTEGER AS new_count,\n    COUNT(*) FILTER (\n        WHERE load_action = 'CHANGED'\n    )::INTEGER AS changed_count,\n    COUNT(*) FILTER (\n        WHERE load_action = 'UNCHANGED'\n    )::INTEGER AS unchanged_count,\n    (\n        SELECT COUNT(*)\n        FROM inserted\n    )::INTEGER AS newly_classified_count\nFROM persisted;",
+        "options": {
+          "queryReplacement": "={{ [   $('Register or Resume Run').first().json.run_id ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1056,
+        -1168
+      ],
+      "id": "d58b9f04-520b-4725-8e55-c96d96097fd0",
+      "name": "Build Validated Dataset and Classify"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH candidates AS (\n    SELECT\n        run_id,\n        source,\n        rate_date,\n        series_id,\n        rate,\n        load_action\n    FROM public.fx_rates_validated\n    WHERE run_id = $1::BIGINT\n      AND load_action IN ('NEW', 'CHANGED')\n),\nwritten AS (\n    INSERT INTO public.fx_rates_master (\n        source,\n        rate_date,\n        series_id,\n        rate,\n        first_loaded_run_id,\n        last_changed_run_id\n    )\n    SELECT\n        source,\n        rate_date,\n        series_id,\n        rate,\n        run_id,\n        run_id\n    FROM candidates\n    ON CONFLICT (\n        source,\n        rate_date,\n        series_id\n    )\n    DO UPDATE SET\n        rate = EXCLUDED.rate,\n        last_changed_run_id = EXCLUDED.last_changed_run_id,\n        updated_at = NOW()\n    WHERE public.fx_rates_master.rate\n          IS DISTINCT FROM EXCLUDED.rate\n    RETURNING\n        source,\n        rate_date,\n        series_id\n)\nSELECT\n    $1::BIGINT AS run_id,\n\n    (\n        SELECT COUNT(*)\n        FROM public.fx_rates_validated\n        WHERE run_id = $1::BIGINT\n          AND load_action = 'NEW'\n    )::INTEGER AS new_count,\n\n    (\n        SELECT COUNT(*)\n        FROM public.fx_rates_validated\n        WHERE run_id = $1::BIGINT\n          AND load_action = 'CHANGED'\n    )::INTEGER AS changed_count,\n\n    (\n        SELECT COUNT(*)\n        FROM public.fx_rates_validated\n        WHERE run_id = $1::BIGINT\n          AND load_action = 'UNCHANGED'\n    )::INTEGER AS unchanged_count,\n\n    (\n        SELECT COUNT(*)\n        FROM written\n    )::INTEGER AS writes_applied;",
+        "options": {
+          "queryReplacement": "={{ [   $('Register or Resume Run').first().json.run_id ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1312,
+        -1168
+      ],
+      "id": "c504892e-e19f-4322-a59d-5678ebf36bcc",
+      "name": "Upsert Validated Rates to Master"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE public.pipeline_runs p\nSET\n    status = 'SUCCESS',\n\n    completed_at = COALESCE(\n        p.completed_at,\n        NOW()\n    ),\n\n    source_row_count = (\n        SELECT COUNT(DISTINCT s.source_row_no)\n        FROM public.fx_rates_staging s\n        WHERE s.run_id = p.run_id\n    ),\n\n    staged_record_count = (\n        SELECT COUNT(*)\n        FROM public.fx_rates_staging s\n        WHERE s.run_id = p.run_id\n    ),\n\n    invalid_record_count = (\n        SELECT COUNT(DISTINCT e.staging_id)\n        FROM public.dq_exceptions e\n        WHERE e.run_id = p.run_id\n    ),\n\n    valid_record_count = (\n        SELECT COUNT(*)\n        FROM public.fx_rates_validated v\n        WHERE v.run_id = p.run_id\n    ),\n\n    new_record_count = (\n        SELECT COUNT(*)\n        FROM public.fx_rates_validated v\n        WHERE v.run_id = p.run_id\n          AND v.load_action = 'NEW'\n    ),\n\n    changed_record_count = (\n        SELECT COUNT(*)\n        FROM public.fx_rates_validated v\n        WHERE v.run_id = p.run_id\n          AND v.load_action = 'CHANGED'\n    ),\n\n    unchanged_record_count = (\n        SELECT COUNT(*)\n        FROM public.fx_rates_validated v\n        WHERE v.run_id = p.run_id\n          AND v.load_action = 'UNCHANGED'\n    )\n\nWHERE p.run_id = $1::BIGINT\n\nRETURNING\n    run_id,\n    source,\n    source_fingerprint,\n    status,\n    source_row_count,\n    staged_record_count,\n    invalid_record_count,\n    valid_record_count,\n    new_record_count,\n    changed_record_count,\n    unchanged_record_count,\n    completed_at;",
+        "options": {
+          "queryReplacement": "={{ [   $('Register or Resume Run').first().json.run_id ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1088,
+        -896
+      ],
+      "id": "d7c5ec2c-0ef9-4004-af10-4627998a12da",
+      "name": "Finalize Run Summary"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n    p.run_id,\n    p.status,\n    p.source_row_count,\n    p.staged_record_count,\n    p.invalid_record_count,\n    p.valid_record_count,\n    p.new_record_count,\n    p.changed_record_count,\n    p.unchanged_record_count,\n\n    (\n        p.staged_record_count\n        =\n        p.invalid_record_count\n        +\n        p.valid_record_count\n    ) AS staging_reconciles,\n\n    (\n        SELECT\n            COUNT(*)\n            -\n            COUNT(\n                DISTINCT (\n                    s.run_id,\n                    s.source_row_no,\n                    s.series_id\n                )\n            )\n        FROM public.fx_rates_staging s\n        WHERE s.run_id = p.run_id\n    ) AS staging_duplicate_key_count,\n\n    (\n        SELECT\n            COUNT(*)\n            -\n            COUNT(\n                DISTINCT (\n                    e.run_id,\n                    e.staging_id,\n                    e.error_code\n                )\n            )\n        FROM public.dq_exceptions e\n        WHERE e.run_id = p.run_id\n    ) AS exception_duplicate_key_count,\n\n    (\n        SELECT\n            COUNT(*)\n            -\n            COUNT(\n                DISTINCT (\n                    v.run_id,\n                    v.source,\n                    v.rate_date,\n                    v.series_id\n                )\n            )\n        FROM public.fx_rates_validated v\n        WHERE v.run_id = p.run_id\n    ) AS validated_duplicate_business_key_count,\n\n    (\n        SELECT\n            COUNT(*)\n            -\n            COUNT(\n                DISTINCT (\n                    m.source,\n                    m.rate_date,\n                    m.series_id\n                )\n            )\n        FROM public.fx_rates_master m\n    ) AS master_duplicate_business_key_count\n\nFROM public.pipeline_runs p\n\nWHERE p.run_id = $1::BIGINT;",
+        "options": {
+          "queryReplacement": "={{ [   $('Register or Resume Run').first().json.run_id ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1328,
+        -896
+      ],
+      "id": "63ab19de-a4fc-4cc6-b67f-7cfad881a725",
+      "name": "Verify Run Reconciliation"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -304,
+        -1584
+      ],
+      "id": "7d485ce0-1650-4d2a-b943-e4c7cbeba3d7",
+      "name": "Manual Trigger"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "BEGIN;\n\n-- If run 6 changed any existing master records,\n-- restore them from the original real run 1.\nUPDATE public.fx_rates_master m\nSET\n    rate = baseline.rate,\n    last_changed_run_id = 1,\n    updated_at = NOW()\nFROM public.fx_rates_validated baseline\nWHERE baseline.run_id = 1\n  AND m.last_changed_run_id = 6\n  AND m.source = baseline.source\n  AND m.rate_date = baseline.rate_date\n  AND m.series_id = baseline.series_id;\n\n-- Do not delete run 6 while master still references it.\nDO $$\nBEGIN\n    IF EXISTS (\n        SELECT 1\n        FROM public.fx_rates_master\n        WHERE first_loaded_run_id = 6\n           OR last_changed_run_id = 6\n    ) THEN\n        RAISE EXCEPTION\n            'Cleanup aborted: fx_rates_master still contains references to run 6';\n    END IF;\nEND $$;\n\n-- Deletes run 6 and cascades its staging / exception / validated rows.\nDELETE FROM public.pipeline_runs\nWHERE run_id = 6;\n\nCOMMIT;\n\n-- Verify cleanup and restored master value.\nSELECT\n    EXISTS (\n        SELECT 1\n        FROM public.pipeline_runs\n        WHERE run_id = 6\n    ) AS run_6_still_exists,\n\n    (\n        SELECT rate\n        FROM public.fx_rates_master\n        WHERE source = 'RBA'\n          AND rate_date = DATE '2023-01-03'\n          AND series_id = 'FXRUSD'\n    ) AS restored_fxrusd_rate,\n\n    (\n        SELECT first_loaded_run_id\n        FROM public.fx_rates_master\n        WHERE source = 'RBA'\n          AND rate_date = DATE '2023-01-03'\n          AND series_id = 'FXRUSD'\n    ) AS first_loaded_run_id,\n\n    (\n        SELECT last_changed_run_id\n        FROM public.fx_rates_master\n        WHERE source = 'RBA'\n          AND rate_date = DATE '2023-01-03'\n          AND series_id = 'FXRUSD'\n    ) AS last_changed_run_id,\n\n    (\n        SELECT COUNT(*)\n        FROM public.fx_rates_staging\n        WHERE run_id = 6\n    ) AS run_6_staging_rows,\n\n    (\n        SELECT COUNT(*)\n        FROM public.dq_exceptions\n        WHERE run_id = 6\n    ) AS run_6_exception_rows,\n\n    (\n        SELECT COUNT(*)\n        FROM public.fx_rates_validated\n        WHERE run_id = 6\n    ) AS run_6_validated_rows;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        720,
+        64
+      ],
+      "id": "b1bf8908-88f2-4ce9-9176-768e23c5c4e8",
+      "name": "Cleanup Changed-Source Test Run",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "BEGIN;\n\n-- Remove any previous copy of the supplier-scale practice dataset.\nDELETE FROM public.fx_rates_master\nWHERE source = 'SUPPLIER_DRILL';\n\nDELETE FROM public.pipeline_runs\nWHERE source = 'SUPPLIER_DRILL';\n\n\n-- ============================================================\n-- 1. CREATE A 250,000-ROW MASTER DATASET\n-- ============================================================\n\n-- Create one completed logical run to provide lineage\n-- for the synthetic master records.\nINSERT INTO public.pipeline_runs (\n    source,\n    source_fingerprint,\n    source_url,\n    status,\n    completed_at\n)\nVALUES (\n    'SUPPLIER_DRILL',\n    REPEAT('a', 64),\n    'synthetic://supplier-drill/master-250k',\n    'SUCCESS',\n    NOW()\n);\n\n\n-- 250 dates × 1,000 series = 250,000 master records.\nINSERT INTO public.fx_rates_master (\n    source,\n    rate_date,\n    series_id,\n    rate,\n    first_loaded_run_id,\n    last_changed_run_id\n)\nSELECT\n    'SUPPLIER_DRILL',\n    DATE '2025-01-01' + d,\n    'FXR' || LPAD(s::TEXT, 6, '0'),\n\n    (\n        1\n        + d * 0.0001\n        + s * 0.000001\n    )::NUMERIC(20,8),\n\n    r.run_id,\n    r.run_id\n\nFROM generate_series(0, 249) AS d\n\nCROSS JOIN generate_series(1, 1000) AS s\n\nCROSS JOIN LATERAL (\n    SELECT run_id\n    FROM public.pipeline_runs\n    WHERE source = 'SUPPLIER_DRILL'\n      AND source_fingerprint = REPEAT('a', 64)\n) AS r;\n\n\n-- ============================================================\n-- 2. CREATE THE 300,000-ROW SUPPLIER SOURCE RUN\n-- ============================================================\n\nINSERT INTO public.pipeline_runs (\n    source,\n    source_fingerprint,\n    source_url,\n    status\n)\nVALUES (\n    'SUPPLIER_DRILL',\n    REPEAT('b', 64),\n    'synthetic://supplier-drill/source-300k',\n    'IN_PROGRESS'\n);\n\n\n-- ============================================================\n-- 3. LOAD 300,000 SUPPLIER ROWS INTO STAGING\n-- ============================================================\n\nWITH supplier_run AS (\n\n    SELECT run_id\n    FROM public.pipeline_runs\n    WHERE source = 'SUPPLIER_DRILL'\n      AND source_fingerprint = REPEAT('b', 64)\n\n),\n\nrows_to_insert AS (\n\n    -- --------------------------------------------------------\n    -- A. 210,000 UNCHANGED MATCHES\n    -- --------------------------------------------------------\n\n    SELECT\n        (d * 1000 + s)::INTEGER AS source_row_no,\n\n        TO_CHAR(\n            DATE '2025-01-01' + d,\n            'DD-Mon-YYYY'\n        ) AS raw_rate_date,\n\n        'FXR' || LPAD(s::TEXT, 6, '0')\n            AS series_id,\n\n        (\n            1\n            + d * 0.0001\n            + s * 0.000001\n        )::NUMERIC(20,8)::TEXT\n            AS raw_rate,\n\n        'SUPPLIER_DRILL'::TEXT\n            AS source\n\n    FROM generate_series(0, 209) AS d\n    CROSS JOIN generate_series(1, 1000) AS s\n\n\n    UNION ALL\n\n\n    -- --------------------------------------------------------\n    -- B. 25,000 CHANGED MATCHES\n    -- Same business keys as master, rate differs by +0.01.\n    -- --------------------------------------------------------\n\n    SELECT\n        (\n            210000\n            + (d - 210) * 1000\n            + s\n        )::INTEGER,\n\n        TO_CHAR(\n            DATE '2025-01-01' + d,\n            'DD-Mon-YYYY'\n        ),\n\n        'FXR' || LPAD(s::TEXT, 6, '0'),\n\n        (\n            1\n            + d * 0.0001\n            + s * 0.000001\n            + 0.01\n        )::NUMERIC(20,8)::TEXT,\n\n        'SUPPLIER_DRILL'::TEXT\n\n    FROM generate_series(210, 234) AS d\n    CROSS JOIN generate_series(1, 1000) AS s\n\n\n    UNION ALL\n\n\n    -- --------------------------------------------------------\n    -- C1. FIRST COPY OF 5,000 DUPLICATE BUSINESS KEYS\n    -- --------------------------------------------------------\n\n    SELECT\n        (\n            235000\n            + (d - 235) * 1000\n            + s\n        )::INTEGER,\n\n        TO_CHAR(\n            DATE '2025-01-01' + d,\n            'DD-Mon-YYYY'\n        ),\n\n        'FXR' || LPAD(s::TEXT, 6, '0'),\n\n        (\n            1\n            + d * 0.0001\n            + s * 0.000001\n        )::NUMERIC(20,8)::TEXT,\n\n        'SUPPLIER_DRILL'::TEXT\n\n    FROM generate_series(235, 239) AS d\n    CROSS JOIN generate_series(1, 1000) AS s\n\n\n    UNION ALL\n\n\n    -- --------------------------------------------------------\n    -- C2. SECOND COPY OF THE SAME 5,000 KEYS\n    --\n    -- Result:\n    -- 5,000 duplicate business keys\n    -- 10,000 affected rows\n    -- --------------------------------------------------------\n\n    SELECT\n        (\n            240000\n            + (d - 235) * 1000\n            + s\n        )::INTEGER,\n\n        TO_CHAR(\n            DATE '2025-01-01' + d,\n            'DD-Mon-YYYY'\n        ),\n\n        'FXR' || LPAD(s::TEXT, 6, '0'),\n\n        (\n            1\n            + d * 0.0001\n            + s * 0.000001\n        )::NUMERIC(20,8)::TEXT,\n\n        'SUPPLIER_DRILL'::TEXT\n\n    FROM generate_series(235, 239) AS d\n    CROSS JOIN generate_series(1, 1000) AS s\n\n\n    UNION ALL\n\n\n    -- --------------------------------------------------------\n    -- D. 45,000 VALID SOURCE-ONLY RECORDS\n    --\n    -- These dates do not exist in the 250k master.\n    -- --------------------------------------------------------\n\n    SELECT\n        (\n            245000\n            + (d - 250) * 1000\n            + s\n        )::INTEGER,\n\n        TO_CHAR(\n            DATE '2025-01-01' + d,\n            'DD-Mon-YYYY'\n        ),\n\n        'FXR' || LPAD(s::TEXT, 6, '0'),\n\n        (\n            1\n            + d * 0.0001\n            + s * 0.000001\n        )::NUMERIC(20,8)::TEXT,\n\n        'SUPPLIER_DRILL'::TEXT\n\n    FROM generate_series(250, 294) AS d\n    CROSS JOIN generate_series(1, 1000) AS s\n\n\n    UNION ALL\n\n\n    -- --------------------------------------------------------\n    -- E. 10,000 INVALID BUSINESS KEYS\n    --\n    -- Date and rate are valid.\n    -- Only series_id is deliberately invalid.\n    -- --------------------------------------------------------\n\n    SELECT\n        (\n            290000\n            + (d - 295) * 1000\n            + s\n        )::INTEGER,\n\n        TO_CHAR(\n            DATE '2025-01-01' + d,\n            'DD-Mon-YYYY'\n        ),\n\n        'BAD' || LPAD(s::TEXT, 6, '0'),\n\n        (\n            1\n            + d * 0.0001\n            + s * 0.000001\n        )::NUMERIC(20,8)::TEXT,\n\n        'SUPPLIER_DRILL'::TEXT\n\n    FROM generate_series(295, 304) AS d\n    CROSS JOIN generate_series(1, 1000) AS s\n)\n\n\nINSERT INTO public.fx_rates_staging (\n    run_id,\n    source_row_no,\n    raw_rate_date,\n    series_id,\n    raw_rate,\n    source\n)\n\nSELECT\n    sr.run_id,\n    r.source_row_no,\n    r.raw_rate_date,\n    r.series_id,\n    r.raw_rate,\n    r.source\n\nFROM rows_to_insert r\nCROSS JOIN supplier_run sr;\n\n\nCOMMIT;\n\n\n-- ============================================================\n-- VERIFY THE PRACTICE DATASET\n-- ============================================================\n\nSELECT\n\n    (\n        SELECT run_id\n        FROM public.pipeline_runs\n        WHERE source = 'SUPPLIER_DRILL'\n          AND source_fingerprint = REPEAT('a', 64)\n    ) AS baseline_run_id,\n\n    (\n        SELECT run_id\n        FROM public.pipeline_runs\n        WHERE source = 'SUPPLIER_DRILL'\n          AND source_fingerprint = REPEAT('b', 64)\n    ) AS supplier_run_id,\n\n    (\n        SELECT COUNT(*)\n        FROM public.fx_rates_master\n        WHERE source = 'SUPPLIER_DRILL'\n    ) AS master_rows,\n\n    (\n        SELECT COUNT(*)\n\n        FROM public.fx_rates_staging s\n\n        JOIN public.pipeline_runs p\n          ON p.run_id = s.run_id\n\n        WHERE p.source = 'SUPPLIER_DRILL'\n          AND p.source_fingerprint = REPEAT('b', 64)\n\n    ) AS supplier_rows;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        192,
+        -272
+      ],
+      "id": "c33361c2-0ded-4ef5-ae48-aae0a4ccc07f",
+      "name": "Seed Supplier Scale Drill",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH supplier AS (\n    SELECT\n        s.source,\n        s.raw_rate_date,\n        s.series_id,\n        s.raw_rate\n    FROM public.fx_rates_staging s\n    JOIN public.pipeline_runs p\n      ON p.run_id = s.run_id\n    WHERE p.source = 'SUPPLIER_DRILL'\n      AND p.source_fingerprint = REPEAT('b', 64)\n),\n\nduplicate_keys AS (\n    SELECT\n        source,\n        raw_rate_date,\n        series_id,\n        COUNT(*) AS row_count\n    FROM supplier\n    GROUP BY\n        source,\n        raw_rate_date,\n        series_id\n    HAVING COUNT(*) > 1\n),\n\nduplicate_rows AS (\n    SELECT s.*\n    FROM supplier s\n    JOIN duplicate_keys d\n      ON d.source = s.source\n     AND d.raw_rate_date = s.raw_rate_date\n     AND d.series_id = s.series_id\n),\n\nnon_duplicate_supplier AS (\n    SELECT s.*\n    FROM supplier s\n    LEFT JOIN duplicate_keys d\n      ON d.source = s.source\n     AND d.raw_rate_date = s.raw_rate_date\n     AND d.series_id = s.series_id\n    WHERE d.series_id IS NULL\n),\n\nvalid_series AS (\n    SELECT DISTINCT\n        series_id\n    FROM public.fx_rates_master\n    WHERE source = 'SUPPLIER_DRILL'\n),\n\ninvalid_rows AS (\n    SELECT s.*\n    FROM non_duplicate_supplier s\n    LEFT JOIN valid_series v\n      ON v.series_id = s.series_id\n    WHERE v.series_id IS NULL\n),\n\nclean_supplier AS (\n    SELECT\n        s.source,\n        TO_DATE(\n            BTRIM(s.raw_rate_date),\n            'DD-Mon-YYYY'\n        ) AS rate_date,\n        s.series_id,\n        BTRIM(s.raw_rate)::NUMERIC(20,8) AS rate\n    FROM non_duplicate_supplier s\n    JOIN valid_series v\n      ON v.series_id = s.series_id\n),\n\nclassified AS (\n    SELECT\n        s.*,\n        CASE\n            WHEN m.series_id IS NULL\n                THEN 'SOURCE_ONLY'\n\n            WHEN m.rate IS DISTINCT FROM s.rate\n                THEN 'CHANGED'\n\n            ELSE 'UNCHANGED'\n        END AS reconciliation_status\n\n    FROM clean_supplier s\n\n    LEFT JOIN public.fx_rates_master m\n      ON m.source = s.source\n     AND m.rate_date = s.rate_date\n     AND m.series_id = s.series_id\n)\n\nSELECT\n    (SELECT COUNT(*) FROM supplier)\n        AS supplier_rows,\n\n    (SELECT COUNT(*) FROM duplicate_keys)\n        AS duplicate_business_keys,\n\n    (SELECT COUNT(*) FROM duplicate_rows)\n        AS duplicate_affected_rows,\n\n    (\n        SELECT SUM(row_count - 1)\n        FROM duplicate_keys\n    ) AS excess_duplicate_rows,\n\n    (SELECT COUNT(*) FROM invalid_rows)\n        AS invalid_key_rows,\n\n    (SELECT COUNT(*) FROM clean_supplier)\n        AS clean_supplier_rows,\n\n    COUNT(*) FILTER (\n        WHERE reconciliation_status = 'SOURCE_ONLY'\n    ) AS source_only_rows,\n\n    COUNT(*) FILTER (\n        WHERE reconciliation_status = 'CHANGED'\n    ) AS changed_rows,\n\n    COUNT(*) FILTER (\n        WHERE reconciliation_status = 'UNCHANGED'\n    ) AS unchanged_rows,\n\n    (\n        (SELECT COUNT(*) FROM supplier)\n        =\n        (SELECT COUNT(*) FROM duplicate_rows)\n        +\n        (SELECT COUNT(*) FROM invalid_rows)\n        +\n        (SELECT COUNT(*) FROM clean_supplier)\n    ) AS raw_reconciles,\n\n    (\n        (SELECT COUNT(*) FROM clean_supplier)\n        =\n        COUNT(*) FILTER (\n            WHERE reconciliation_status = 'SOURCE_ONLY'\n        )\n        +\n        COUNT(*) FILTER (\n            WHERE reconciliation_status = 'CHANGED'\n        )\n        +\n        COUNT(*) FILTER (\n            WHERE reconciliation_status = 'UNCHANGED'\n        )\n    ) AS clean_reconciles\n\nFROM classified;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        464,
+        -272
+      ],
+      "id": "49fbfc9a-660c-48e6-a48b-b9d895840b4f",
+      "name": "Supplier Reconciliation SQL Practice"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Read-only monitoring report. Run history is by unique source fingerprint,\n-- not every n8n execution or duplicate-source skip.\nWITH recent_runs AS (\n  SELECT run_id, source, source_fingerprint, status,\n         last_attempt_at, completed_at,\n         staged_record_count, valid_record_count, invalid_record_count,\n         new_record_count, changed_record_count, unchanged_record_count\n  FROM public.pipeline_runs\n  WHERE source = 'RBA'\n  ORDER BY run_id DESC\n  LIMIT 20\n)\nSELECT run_id, source, status, last_attempt_at, completed_at,\n       COALESCE(staged_record_count, 0) AS staged_records,\n       COALESCE(valid_record_count, 0) AS valid_records,\n       COALESCE(invalid_record_count, 0) AS invalid_records,\n       CASE WHEN COALESCE(staged_record_count,0) > 0\n            THEN ROUND(100.0 * invalid_record_count / staged_record_count, 2)\n            ELSE NULL END AS invalid_rate_pct,\n       COALESCE(new_record_count, 0) AS new_records,\n       COALESCE(changed_record_count, 0) AS changed_records,\n       COALESCE(unchanged_record_count, 0) AS unchanged_records,\n       CASE WHEN staged_record_count IS NULL THEN NULL\n            ELSE staged_record_count = COALESCE(valid_record_count, 0)\n                                       + COALESCE(invalid_record_count, 0)\n       END AS counts_reconcile\nFROM recent_runs\nORDER BY run_id DESC;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1616,
+        -896
+      ],
+      "id": "1b2668f1-e4f8-4640-aada-91ca847949e9",
+      "name": "Monitor RBA Run History (Read Only)"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Fetch RBA FX CSV": {
+      "main": [
+        [
+          {
+            "node": "Extract CSV as Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract CSV as Text": {
+      "main": [
+        [
+          {
+            "node": "Hash Source Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remove RBA Metadata": {
+      "main": [
+        [
+          {
+            "node": "Parse CSV Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse CSV Rows": {
+      "main": [
+        [
+          {
+            "node": "Normalize FX Rates to Long Format",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize FX Rates to Long Format": {
+      "main": [
+        [
+          {
+            "node": "Package Staging Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash Source Text": {
+      "main": [
+        [
+          {
+            "node": "Register or Resume Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Register or Resume Run": {
+      "main": [
+        [
+          {
+            "node": "Should Process Source?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Process Source?": {
+      "main": [
+        [
+          {
+            "node": "Remove RBA Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop - Source Already Processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Package Staging Batch": {
+      "main": [
+        [
+          {
+            "node": "Load Batch to Staging",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Batch to Staging": {
+      "main": [
+        [
+          {
+            "node": "Validate Staging and Record Exceptions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Staging and Record Exceptions": {
+      "main": [
+        [
+          {
+            "node": "Build Validated Dataset and Classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Validated Dataset and Classify": {
+      "main": [
+        [
+          {
+            "node": "Upsert Validated Rates to Master",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Validated Rates to Master": {
+      "main": [
+        [
+          {
+            "node": "Finalize Run Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Run Summary": {
+      "main": [
+        [
+          {
+            "node": "Verify Run Reconciliation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch RBA FX CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Run Reconciliation": {
+      "main": [
+        [
+          {
+            "node": "Monitor RBA Run History (Read Only)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stop - Source Already Processed": {
+      "main": [
+        [
+          {
+            "node": "Monitor RBA Run History (Read Only)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "nodeGroups": [],
+  "tags": []
+}
