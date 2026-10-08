@@ -43,6 +43,8 @@ Reconciliation checks: `300,000 = 10,000 + 10,000 + 280,000` and `280,000 = 45,0
 
 These are deterministic synthetic data and SQL classification/reconciliation results. They are not evidence of Spark, distributed Big Data processing or production throughput.
 
+![n8n pipeline overview](docs/images/01-pipeline-overview.png)
+
 ## Workflow architecture
 
 ```text
@@ -69,22 +71,36 @@ Separate synthetic practice: seed 250k master / 300k supplier → SQL reconcilia
 ## Functional components
 
 ### 01 — Ingestion and source control
+
+![Ingestion and source fingerprinting](docs/images/02-ingestion.png)
+
 - Retrieve the public RBA foreign-exchange CSV.
 - Fingerprint the source contents and record processing state in `pipeline_runs`.
 - Skip reprocessing of an already successful source fingerprint and support resuming incomplete source runs.
 
 ### 02 — Transformation and data quality
+
+![CSV normalisation, staging and validation](docs/images/03-transformation.png)
+
 - Remove RBA metadata, parse CSV rows, normalize series into long-form records.
 - Insert into PostgreSQL `fx_rates_staging`.
 - Validate dates, series IDs, rates, non-finite values and duplicated business keys.
 - Record quality issues in `dq_exceptions` instead of silently discarding records.
 
 ### 03 — Reconciliation and controlled load
+
+![Incremental classification and reconciliation](docs/images/04-reconciliation.png)
+
 - Classify valid records as NEW, CHANGED or UNCHANGED relative to `fx_rates_master`.
 - Write only NEW/CHANGED candidates with conditional SQL upsert.
 - Store run-level counters and check reconciliations and key uniqueness.
 
 ### 04 — Historical monitoring
+
+![Read-only monitoring node](docs/images/05-monitoring-node.png)
+
+![Historical RBA run monitoring output](docs/images/06-monitoring-results.png)
+
 - Query persisted PostgreSQL `pipeline_runs` for the most recent RBA runs.
 - Report status, staging/valid/invalid counts, invalid percentages and load classification.
 - Verify `staged = valid + invalid` per run.
@@ -92,6 +108,9 @@ Separate synthetic practice: seed 250k master / 300k supplier → SQL reconcilia
 - Monitoring reports one row per registered source fingerprint; it is **not** an exhaustive n8n execution-attempt log or a failure alerting system.
 
 ### 05 — Supplier-scale SQL drill
+
+![300,000-record supplier reconciliation output](docs/images/07-supplier-reconciliation-results.png)
+
 - Generate a repeatable **synthetic** 250,000-record reference/master set and 300,000-record source set.
 - Detect repeated business keys and invalid keys.
 - Reconcile clean records into SOURCE_ONLY / CHANGED / UNCHANGED categories.
