@@ -1,6 +1,6 @@
 # Financial Data Quality & Reconciliation Pipeline
 
-**n8n · PostgreSQL · SQL · Docker · Databricks · PySpark · Delta Lake · RBA public foreign-exchange data**
+**n8n · PostgreSQL · SQL · Docker · Databricks · Microsoft Fabric · Azure ADLS Gen2 · Key Vault · PySpark · Delta Lake · RBA public foreign-exchange data**
 
 An end-to-end, ETL-style workflow that fetches Reserve Bank of Australia (RBA) foreign-exchange data, transforms CSV records into a relational staging dataset, validates quality, tracks exceptions, classifies incremental changes and reconciles results against master data. A read-only SQL monitoring node reports historical outcomes.
 
@@ -59,6 +59,16 @@ A separate [Databricks notebook](databricks/RBA_FX_Medallion_Pipeline.ipynb) rei
 The [separate regression notebook](databricks/tests/regression_tests.ipynb) requires existing Delta tables from the main notebook; it deliberately uses an isolated `rba_fx_v2_changed_test` Delta table for the changed-rate scenario. It does not contain automatic destructive reset operations. GitHub Actions validates notebook JSON and Python syntax **only**; it does not connect to Databricks or validate data processing in the cloud.
 
 **Reproduction:** Import the main notebook into Databricks Free Edition with Serverless compute and permissions to create tables in the `default` schema. Run it on a fresh `rba_fx_v2_*` table namespace. Reprocessing identical source content is designed to skip after the fingerprint check; cleanup of test tables should be performed explicitly and separately if a clean first-load demonstration is needed. The source CSV changes over time, so fresh run counts may differ.
+
+## Azure ADLS Gen2 + Microsoft Fabric extension (9 Oct 2026)
+
+The same RBA FX pipeline was adapted and successfully run on **Microsoft Fabric Trial** with PySpark and Delta Lake: 21,781 staged, 18,623 valid, 3,158 invalid; Delta MERGE and reconciliations PASS, run registry SUCCESS, historical monitoring PASS.
+
+An **Azure ADLS Gen2** storage account was provisioned using Standard/LRS and hierarchical namespace, with the original RBA CSV in a private `rba-data/landing` directory. A local [Python SDK verification script](azure/adls_keyvault_verify.py) used Microsoft Entra login to read a short-lived SAS token securely from **Azure Key Vault**, then read the 140,796-byte RBA CSV and write/read back a small proof file; observed terminal result `MVP RESULT: PASS`.
+
+A **Fabric OneLake Shortcut** to the ADLS `landing` folder was created using **Organizational account (OAuth 2.0)**. A standalone Fabric PySpark test read it successfully (`ADLS Shortcut read: PASS`, 2,185 CSV source lines). The successful main Fabric Pipeline, however, **still downloads its source directly from RBA HTTP**; its full 13-step run has not been re-executed with ADLS as the ingestion source. Fabric SAS + Key Vault Reference shortcut attempts encountered credential retrieval errors and are **not** claimed successful.
+
+[Fabric notebooks, Azure script, reproduction notes, security and scope boundaries](fabric/README.md) · [Fabric 13-step source notebook](fabric/RBA_FX_Fabric_Medallion_MVP.ipynb) · [ADLS Shortcut verification notebook](fabric/verify_adls_shortcut.ipynb)
 
 ## Workflow architecture
 
@@ -153,5 +163,5 @@ The export documents the implementation, but does not include Docker Compose, co
 - The RBA pipeline processes a public CSV file, not private banking/customer data.
 - The synthetic supplier drill is SQL on PostgreSQL, not distributed big-data infrastructure.
 - Run history reflects distinct registered source fingerprints, not every n8n execution attempt.
-- Databricks/PySpark/Delta functionality described above was exercised in Databricks Free Edition; no Azure Fabric, production infrastructure or SLAs are claimed.
+- Databricks Free Edition, Fabric Trial, Azure ADLS Gen2 and Key Vault personal-project exercises described above were verified within the explicitly stated scopes; no production infrastructure or SLAs are claimed.
 - Test outputs above were supplied from actual node executions; the public export has not been independently executed as a clean-room installation.
