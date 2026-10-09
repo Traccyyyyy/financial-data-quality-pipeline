@@ -1,0 +1,127 @@
+{
+  "fields": [
+    {
+      "key": "0",
+      "name": "run_id",
+      "tag": {
+        "type": "string"
+      }
+    },
+    {
+      "key": "1",
+      "name": "source",
+      "tag": {
+        "type": "string"
+      }
+    },
+    {
+      "key": "2",
+      "name": "fingerprint_prefix",
+      "tag": {
+        "type": "string"
+      }
+    },
+    {
+      "key": "3",
+      "name": "status",
+      "tag": {
+        "type": "string"
+      }
+    },
+    {
+      "key": "4",
+      "name": "staged_count",
+      "tag": {
+        "type": "bigint"
+      }
+    },
+    {
+      "key": "5",
+      "name": "valid_count",
+      "tag": {
+        "type": "bigint"
+      }
+    },
+    {
+      "key": "6",
+      "name": "invalid_count",
+      "tag": {
+        "type": "bigint"
+      }
+    },
+    {
+      "key": "7",
+      "name": "invalid_rate_pct",
+      "tag": {
+        "type": "decimal"
+      }
+    },
+    {
+      "key": "8",
+      "name": "new_count",
+      "tag": {
+        "type": "bigint"
+      }
+    },
+    {
+      "key": "9",
+      "name": "changed_count",
+      "tag": {
+        "type": "bigint"
+      }
+    },
+    {
+      "key": "10",
+      "name": "unchanged_count",
+      "tag": {
+        "type": "bigint"
+      }
+    },
+    {
+      "key": "11",
+      "name": "count_reconciliation",
+      "tag": {
+        "type": "string"
+      }
+    },
+    {
+      "key": "12",
+      "name": "recorded_at",
+      "tag": {
+        "type": "timestamp"
+      }
+    }
+  ],
+  "rows": [
+    {
+      "run_id": "08b445b4-7f80-473d-ab1a-1799b9e2f6ca",
+      "source": "onelake-shortcut://rba_fx_lakehouse/Files/landing/f11.1-data.csv",
+      "fingerprint_prefix": "bde5871c75c1",
+      "status": "SUCCESS",
+      "staged_count": "21781",
+      "valid_count": "18623",
+      "invalid_count": "3158",
+      "invalid_rate_pct": "14.50",
+      "new_count": "0",
+      "changed_count": "0",
+      "unchanged_count": "18623",
+      "count_reconciliation": "PASS",
+      "recorded_at": "2026-10-09 13:32:16.943623"
+    },
+    {
+      "run_id": "43373f76-1c66-4529-afb3-4351cd269092",
+      "source": "https://www.rba.gov.au/statistics/tables/csv/f11.1-data.csv",
+      "fingerprint_prefix": "bde5871c75c1",
+      "status": "SUCCESS",
+      "staged_count": "21781",
+      "valid_count": "18623",
+      "invalid_count": "3158",
+      "invalid_rate_pct": "14.50",
+      "new_count": "18623",
+      "changed_count": "0",
+      "unchanged_count": "0",
+      "count_reconciliation": "PASS",
+      "recorded_at": "2026-10-09 10:05:36.572234"
+    }
+  ]
+}
