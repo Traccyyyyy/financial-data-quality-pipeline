@@ -1,10 +1,10 @@
 # Financial Data Quality & Reconciliation Pipeline
 
-**n8n · PostgreSQL · SQL · Docker · RBA public foreign-exchange data**
+**n8n · PostgreSQL · SQL · Docker · Databricks · PySpark · Delta Lake · RBA public foreign-exchange data**
 
 An end-to-end, ETL-style workflow that fetches Reserve Bank of Australia (RBA) foreign-exchange data, transforms CSV records into a relational staging dataset, validates quality, tracks exceptions, classifies incremental changes and reconciles results against master data. A read-only SQL monitoring node reports historical outcomes.
 
-**Scope:** Personal technical project and synthetic-data exercise; not an enterprise production system, distributed Spark/Databricks pipeline, or a commercial deployment.
+**Scope:** Personal technical project and synthetic-data exercise; includes a Databricks Free Edition reimplementation, not an enterprise production deployment.
 
 ## Verified results
 
@@ -44,6 +44,21 @@ Reconciliation checks: `300,000 = 10,000 + 10,000 + 280,000` and `280,000 = 45,0
 These are deterministic synthetic data and SQL classification/reconciliation results. They are not evidence of Spark, distributed Big Data processing or production throughput.
 
 ![n8n pipeline overview](docs/images/01-pipeline-overview.png)
+
+## Databricks medallion implementation (9 Oct 2026)
+
+A separate [Databricks notebook](databricks/RBA_FX_Medallion_Pipeline.ipynb) reimplements the same RBA FX source and core n8n transformations with **Python, PySpark, Spark SQL, and Delta Lake**. The implementation is kept alongside the [original n8n workflow](workflows/rba-fx-data-quality-pipeline.json), not presented as a separate unrelated project.
+
+- **Bronze:** fetch the public RBA F11.1 CSV, calculate a SHA-256 fingerprint, and save source lines to Delta.
+- **Silver:** remove metadata, parse observations, normalize 23 FX series from wide to long, stage records, and apply the original ten quality rules; store exception details in Delta.
+- **Gold / reconciliation:** classify valid rows as NEW / CHANGED / UNCHANGED against the master business key (`source, rate_date, series_id`); use Delta `MERGE INTO` for conditional updates; record reconciliation outcomes and query run history.
+- **Source-run protection:** run registry with RUNNING and SUCCESS states and duplicate-source fingerprint detection. Full orchestration, automatic recovery from FAILED runs, and enterprise scheduling are out of scope.
+
+**Observed Databricks Free Edition result (9 Oct 2026):** 21,781 staged rows; 18,623 valid; 3,158 invalid (14.50%). First-load classification: 18,623 NEW / 0 CHANGED / 0 UNCHANGED. Count reconciliation and master key/value checks passed; one SUCCESS run was persisted. A repeated identical fingerprint was detected and the notebook exit path returned SKIPPED. A CHANGED/Delta MERGE test was performed independently with synthetic modified values; these are not real-world changed-rate observations.
+
+The [separate regression notebook](databricks/tests/regression_tests.ipynb) requires existing Delta tables from the main notebook; it deliberately uses an isolated `rba_fx_v2_changed_test` Delta table for the changed-rate scenario. It does not contain automatic destructive reset operations. GitHub Actions validates notebook JSON and Python syntax **only**; it does not connect to Databricks or validate data processing in the cloud.
+
+**Reproduction:** Import the main notebook into Databricks Free Edition with Serverless compute and permissions to create tables in the `default` schema. Run it on a fresh `rba_fx_v2_*` table namespace. Reprocessing identical source content is designed to skip after the fingerprint check; cleanup of test tables should be performed explicitly and separately if a clean first-load demonstration is needed. The source CSV changes over time, so fresh run counts may differ.
 
 ## Workflow architecture
 
@@ -138,5 +153,5 @@ The export documents the implementation, but does not include Docker Compose, co
 - The RBA pipeline processes a public CSV file, not private banking/customer data.
 - The synthetic supplier drill is SQL on PostgreSQL, not distributed big-data infrastructure.
 - Run history reflects distinct registered source fingerprints, not every n8n execution attempt.
-- No claim is made of Azure, Databricks, Fabric or production SLAs.
+- Databricks/PySpark/Delta functionality described above was exercised in Databricks Free Edition; no Azure Fabric, production infrastructure or SLAs are claimed.
 - Test outputs above were supplied from actual node executions; the public export has not been independently executed as a clean-room installation.
