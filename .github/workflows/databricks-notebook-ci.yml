@@ -1,0 +1,36 @@
+name: Databricks notebook CI
+on:
+  push:
+    paths:
+      - 'databricks/**'
+      - '.github/workflows/databricks-notebook-ci.yml'
+  pull_request:
+    paths:
+      - 'databricks/**'
+      - '.github/workflows/databricks-notebook-ci.yml'
+jobs:
+  validate-notebooks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate notebook JSON and Python syntax
+        run: |
+          python - <<'PY'
+          import json, pathlib, ast
+          notebooks = sorted(pathlib.Path("databricks").rglob("*.ipynb"))
+          assert notebooks, "No Databricks notebooks found"
+          for path in notebooks:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              assert data.get("nbformat") == 4, path
+              for index, cell in enumerate(data["cells"]):
+                  if cell["cell_type"] != "code":
+                      continue
+                  source = "".join(cell.get("source", []))
+                  if source.lstrip().startswith(("%", "!")):
+                      continue
+                  ast.parse(source, filename=f"{path}:cell-{index}")
+              print(f"Validated {path}")
+          PY
