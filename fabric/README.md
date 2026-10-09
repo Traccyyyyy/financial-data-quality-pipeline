@@ -11,10 +11,10 @@ Part of the same **RBA Financial Data Quality & Reconciliation Pipeline** projec
 
 ## Boundaries (important)
 
-- The successful **main Fabric data processing** notebook still downloads its CSV directly from the public RBA HTTP URL. The ADLS Shortcut read was verified **in a separate Fabric cell**, not incorporated into the Step 01 source for the full 13-step workflow.
+- After the initial HTTP run, the complete Fabric Steps 01–13 workflow also ran successfully from the ADLS OneLake Shortcut. The follow-up run logged 21,781 staged, 18,623 valid, 3,158 invalid, 0 NEW, 0 CHANGED, 18,623 UNCHANGED, and count reconciliation PASS.
 - The Key Vault/SAS flow was demonstrated with **local Python only**. An attempted **Fabric SAS + Key Vault Reference Shortcut** returned a stored credential error and is **not claimed to work**. The successful Fabric Shortcut uses Organizational account authentication.
 - This is a personal trial/free-credit environment, **not a production deployment**, managed job, or Azure-hosted Databricks service.
-- The included notebooks and Python sample are sanitized project sources. The Fabric notebook uses source HTTP ingestion and is a platform-adapted copy; it was run by the project owner, not in GitHub CI.
+- The included notebooks and Python sample are sanitized project sources. The committed Fabric notebook is the earlier HTTP-source version; the later successful ADLS-source edits were made inside Fabric and still need to be exported to GitHub. GitHub CI does not run Fabric.
 - Storage SAS tokens expire; do not publish token values, signed URLs, cloud account keys, or private screenshots. `AZURE_KEY_VAULT_URL` is configured as a local environment variable.
 
 ## Reproduce the SDK test
